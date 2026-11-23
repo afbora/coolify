@@ -82,6 +82,7 @@ test('queues a deployment only to the attached destination', function () {
     expect($deployment->server_id)->toBe($this->additionalServer->id)
         ->and((int) $deployment->destination_id)->toBe($this->additionalDestination->id)
         ->and($deployment->only_this_server)->toBeTruthy()
+        ->and($deployment->rollback)->toBeFalsy()
         ->and($deployment->is_api)->toBeTruthy()
         ->and($deployment->status)->toBe(ApplicationDeploymentStatus::IN_PROGRESS->value);
 
@@ -247,3 +248,50 @@ test('returns 403 for a team member', function () {
 
     expect(ApplicationDeploymentQueue::query()->count())->toBe(0);
 });
+
+test('deploys the commit of a successful deployment to the destination as a rollback', function () {
+    attachAdditionalDestination($this->application, $this->additionalDestination);
+    $commit = str_repeat('a', 40);
+
+    ApplicationDeploymentQueue::create([
+        'application_id' => $this->application->id,
+        'server_id' => $this->server->id,
+        'destination_id' => $this->destination->id,
+        'deployment_uuid' => 'deployed-commit',
+        'commit' => $commit,
+        'pull_request_id' => 0,
+        'status' => ApplicationDeploymentStatus::FINISHED->value,
+    ]);
+
+    $response = $this->withHeaders(destinationDeployHeaders($this->token))
+        ->postJson("/api/v1/applications/{$this->application->uuid}/destinations/{$this->additionalDestination->uuid}/deploy?commit={$commit}");
+
+    $response->assertOk()
+        ->assertJsonPath('message', 'Deployment request queued.');
+
+    $deployment = ApplicationDeploymentQueue::query()->where('deployment_uuid', $response->json('deployment_uuid'))->firstOrFail();
+
+    expect($deployment->commit)->toBe($commit)
+        ->and($deployment->rollback)->toBeTruthy()
+        ->and($deployment->only_this_server)->toBeTruthy()
+        ->and($deployment->server_id)->toBe($this->additionalServer->id);
+
+    Bus::assertDispatched(ApplicationDeploymentJob::class);
+});
+
+test('returns 422 for a commit that is not a rollback image or a successful deployment', function (string $commit) {
+    attachAdditionalDestination($this->application, $this->additionalDestination);
+
+    $this->withHeaders(destinationDeployHeaders($this->token))
+        ->postJson("/api/v1/applications/{$this->application->uuid}/destinations/{$this->additionalDestination->uuid}/deploy?commit=".urlencode($commit))
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('commit');
+
+    expect(ApplicationDeploymentQueue::query()->count())->toBe(0);
+
+    Bus::assertNotDispatched(ApplicationDeploymentJob::class);
+})->with([
+    'unknown commit' => [str_repeat('b', 40)],
+    'disallowed characters' => ['main branch'],
+    'leading hyphen' => ['-main'],
+]);

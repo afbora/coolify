@@ -6948,6 +6948,7 @@ class ApplicationsController extends Controller
             new OA\Parameter(name: 'uuid', in: 'path', required: true, description: 'UUID of the application.', schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'destination_uuid', in: 'path', required: true, description: 'UUID of the destination.', schema: new OA\Schema(type: 'string')),
             new OA\Parameter(name: 'force', in: 'query', description: 'Force rebuild.', schema: new OA\Schema(type: 'boolean', default: false)),
+            new OA\Parameter(name: 'commit', in: 'query', description: 'Image tag or commit to deploy instead of the latest commit of the branch. It must be a tag from the rollback images list or the commit of a successful production deployment, and the deployment runs as a rollback to it on this destination only.', schema: new OA\Schema(type: 'string')),
         ],
         responses: [
             new OA\Response(
@@ -7007,17 +7008,38 @@ class ApplicationsController extends Controller
             return response()->json(['message' => 'The server of this destination cannot host resources.'], 422);
         }
 
+        $commit = null;
+        if ($request->filled('commit')) {
+            try {
+                $commit = validateGitRef($request->string('commit')->toString(), 'commit');
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => ['commit' => [$e->getMessage()]],
+                ], 422);
+            }
+
+            if (! GetRollbackImages::allows($application, $commit)) {
+                return response()->json([
+                    'message' => 'Validation failed.',
+                    'errors' => ['commit' => ['The commit is not a rollback image or a successful deployment of this application.']],
+                ], 422);
+            }
+        }
+
         $deploymentUuid = new_public_id();
 
         $result = queue_application_deployment(
             application: $application,
             deployment_uuid: $deploymentUuid,
+            commit: $commit,
             force_rebuild: $force,
             is_api: true,
             no_questions_asked: true,
             server: $destination->server,
             destination: $destination,
             only_this_server: true,
+            rollback: $commit !== null,
             reject_if_server_busy: true,
         );
 
@@ -7035,6 +7057,7 @@ class ApplicationsController extends Controller
             'application_name' => $application->name,
             'destination_uuid' => $destination->uuid,
             'deployment_uuid' => $deploymentUuid,
+            'commit' => $commit,
             'force_rebuild' => $force,
         ]);
 

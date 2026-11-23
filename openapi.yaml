@@ -4553,6 +4553,12 @@ paths:
           schema:
             type: boolean
             default: false
+        -
+          name: commit
+          in: query
+          description: 'Image tag or commit to deploy instead of the latest commit of the branch. It must be a tag from the rollback images list or the commit of a successful production deployment, and the deployment runs as a rollback to it on this destination only.'
+          schema:
+            type: string
       responses:
         '200':
           description: 'Deployment queued.'
